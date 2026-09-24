@@ -326,3 +326,144 @@ test('concurrent requests never mix results or registrations', async (t) => {
     assert.ok(list.body.profiles.some((p: any) => p.id === `conc-${i}`));
   }
 });
+
+/* ------------------------- inverse design over HTTP ------------------------- */
+
+test('POST /design/lift: inverse camber closes the loop through /analyze', async (t) => {
+  const h = await start();
+  t.after(() => h.server.close());
+  const alpha = 0.02;
+  const cl = 0.45;
+  const { status, body } = await call(h, '/design/lift', { body: { alpha, cl } });
+  assert.equal(status, 200);
+  assert.equal(body.camber.kind, 'points');
+  assert.equal(body.criterion.name, 'minimum_slope_energy');
+  assert.equal(body.verification.passed, true);
+  assert.ok(body.verification.clError <= body.verification.tolerance.cl);
+
+  // Hard closure: feed the returned camber straight back into /analyze.
+  const back = await call(h, '/analyze', { body: { camber: body.camber, alpha } });
+  assert.equal(back.status, 200);
+  assert.ok(Math.abs(back.body.cl - cl) <= body.verification.tolerance.cl);
+});
+
+test('POST /design/lift with cm pins both and lists the moment constraint', async (t) => {
+  const h = await start();
+  t.after(() => h.server.close());
+  const { status, body } = await call(h, '/design/lift', {
+    body: { alpha: 0.03, cl: 0.5, cmQuarter: -0.05 },
+  });
+  assert.equal(status, 200);
+  assert.ok(body.criterion.constraints.includes('cm_quarter_target'));
+  const back = await call(h, '/analyze', { body: { camber: body.camber, alpha: 0.03 } });
+  assert.ok(Math.abs(back.body.cl - 0.5) <= 2e-3);
+  assert.ok(Math.abs(back.body.cmQuarter - -0.05) <= 5e-4);
+});
+
+test('POST /design/lift: symmetric + nonzero moment is a structured 422', async (t) => {
+  const h = await start();
+  t.after(() => h.server.close());
+  const { status, body } = await call(h, '/design/lift', {
+    body: { alpha: 0.05, cl: 0.3, cmQuarter: -0.04, symmetric: true },
+  });
+  assert.equal(status, 422);
+  assert.equal(body.error.code, 'TARGET_INCONSISTENT');
+  assert.equal(body.error.details.symmetricSectionCmQuarter, 0);
+});
+
+test('POST /design/lift: wild lift is TARGET_UNREALIZABLE 422', async (t) => {
+  const h = await start();
+  t.after(() => h.server.close());
+  const { status, body } = await call(h, '/design/lift', { body: { alpha: 0, cl: 3 } });
+  assert.equal(status, 422);
+  assert.equal(body.error.code, 'TARGET_UNREALIZABLE');
+  assert.ok(body.error.details.maxAllowedSlope !== undefined);
+});
+
+test('POST /design/lift with saveAs registers a reusable named profile', async (t) => {
+  const h = await start();
+  t.after(() => h.server.close());
+  const { status, body } = await call(h, '/design/lift', {
+    body: { alpha: 0, cl: 0.4, saveAs: 'inv-cruise' },
+  });
+  assert.equal(status, 200);
+  assert.equal(body.savedProfile.id, 'inv-cruise');
+
+  // Reuse by profile id in the ordinary forward path and in a sweep.
+  const byProfile = await call(h, '/analyze', { body: { profile: 'inv-cruise', alpha: 0 } });
+  assert.equal(byProfile.status, 200);
+  assert.ok(Math.abs(byProfile.body.cl - body.verification.cl) < 1e-9);
+
+  const sweepRes = await call(h, '/sweep', {
+    body: { profile: 'inv-cruise', alphaStart: -0.05, alphaEnd: 0.05, steps: 4 },
+  });
+  assert.equal(sweepRes.status, 200);
+  assert.equal(sweepRes.body.count, 5);
+});
+
+test('POST /design/loading: shape target closes the loop and reuses as profile', async (t) => {
+  const h = await start();
+  t.after(() => h.server.close());
+  // Pull a target trajectory off the demo profile.
+  const demo = await call(h, '/analyze', {
+    body: { profile: 'demo-parabola-5pct', alpha: 0.02, samples: 64 },
+  });
+  assert.equal(demo.status, 200);
+  const loading = demo.body.loading.map((p: any) => ({ x: p.x, deltaCp: p.deltaCp }));
+
+  const { status, body } = await call(h, '/design/loading', {
+    body: { alpha: 0.02, loading, saveAs: 'inv-shape' },
+  });
+  assert.equal(status, 200);
+  assert.equal(body.verification.passed, true);
+  assert.ok(body.criterion.constraints.includes('loading_least_squares'));
+
+  // Registered and retrievable.
+  const got = await call(h, '/profiles/inv-shape', { method: 'GET' });
+  assert.equal(got.status, 200);
+
+  const back = await call(h, '/analyze', { body: { profile: 'inv-shape', alpha: 0.02 } });
+  assert.ok(Math.abs(back.body.cl - body.verification.cl) <= 2e-3);
+});
+
+test('POST /design/loading: sparse/non-monotonic samples are rejected before solving', async (t) => {
+  const h = await start();
+  t.after(() => h.server.close());
+  const few = await call(h, '/design/loading', {
+    body: { alpha: 0, loading: [{ x: 0.2, deltaCp: 1 }, { x: 0.6, deltaCp: 1 }] },
+  });
+  assert.equal(few.status, 422);
+  assert.equal(few.body.error.code, 'LOADING_TOO_FEW_SAMPLES');
+
+  const samples = Array.from({ length: 10 }, (_, i) => ({ x: 0.05 + i * 0.08, deltaCp: 1 }));
+  samples[4].x = samples[2].x;
+  const mono = await call(h, '/design/loading', { body: { alpha: 0, loading: samples } });
+  assert.equal(mono.status, 422);
+  assert.equal(mono.body.error.code, 'LOADING_NOT_MONOTONIC');
+});
+
+test('inverse endpoints: malformed body is INVALID_REQUEST', async (t) => {
+  const h = await start();
+  t.after(() => h.server.close());
+  const r = await call(h, '/design/lift', { body: { alpha: 0.05 } }); // missing cl
+  assert.equal(r.status, 400);
+  assert.equal(r.body.error.code, 'INVALID_REQUEST');
+});
+
+test('concurrent inverse designs stay isolated and individually close the loop', async (t) => {
+  const h = await start();
+  t.after(() => h.server.close());
+  const jobs: Promise<any>[] = [];
+  for (let i = 0; i < 16; i += 1) {
+    const cl = 0.2 + (i % 5) * 0.1;
+    jobs.push(call(h, '/design/lift', { body: { alpha: 0.02, cl } }));
+  }
+  const responses = await Promise.all(jobs);
+  for (let i = 0; i < responses.length; i += 1) {
+    const r = responses[i];
+    assert.equal(r.status, 200, `job ${i}`);
+    assert.equal(r.body.verification.passed, true);
+    const cl = 0.2 + (i % 5) * 0.1;
+    assert.ok(Math.abs(r.body.verification.cl - cl) <= r.body.verification.tolerance.cl);
+  }
+});

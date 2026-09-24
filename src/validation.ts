@@ -95,6 +95,47 @@ const createProfileBodySchema = z
   })
   .strict();
 
+/* ----------------------- inverse design payloads ----------------------- */
+
+const toleranceSchema = z
+  .object({
+    cl: z.number().finite().positive().max(1),
+    cmQuarter: z.number().finite().positive().max(1),
+  })
+  .strict();
+
+const inverseScalarBodySchema = z
+  .object({
+    alpha: finiteNumber,
+    cl: finiteNumber,
+    cmQuarter: finiteNumber.optional(),
+    symmetric: z.boolean().optional(),
+    tolerance: toleranceSchema.optional(),
+    saveAs: profileIdSchema.optional(),
+    name: z.string().max(200).optional(),
+    description: z.string().max(2000).optional(),
+  })
+  .strict();
+
+const loadingSampleSchema = z
+  .object({
+    x: finiteNumber,
+    deltaCp: finiteNumber,
+  })
+  .strict();
+
+const inverseLoadingBodySchema = z
+  .object({
+    alpha: finiteNumber,
+    loading: z.array(loadingSampleSchema).min(1),
+    order: z.number().int().min(2).max(8).optional(),
+    tolerance: toleranceSchema.optional(),
+    saveAs: profileIdSchema.optional(),
+    name: z.string().max(200).optional(),
+    description: z.string().max(2000).optional(),
+  })
+  .strict();
+
 export interface AnalyzeRequest {
   camber?: CamberDef;
   profile?: string;
@@ -128,6 +169,27 @@ export interface CreateProfileRequest {
   name?: string;
   description?: string;
   camber: CamberDef;
+}
+
+export interface InverseScalarRequest {
+  alpha: number;
+  cl: number;
+  cmQuarter?: number;
+  symmetric?: boolean;
+  tolerance?: { cl?: number; cmQuarter?: number };
+  saveAs?: string;
+  name?: string;
+  description?: string;
+}
+
+export interface InverseLoadingRequest {
+  alpha: number;
+  loading: Array<{ x: number; deltaCp: number }>;
+  order?: number;
+  tolerance?: { cl?: number; cmQuarter?: number };
+  saveAs?: string;
+  name?: string;
+  description?: string;
 }
 
 function formatZod(err: z.ZodError): ServiceError {
@@ -172,6 +234,14 @@ export function parseBatch(body: unknown): { items: BatchItemRequest[] } {
 
 export function parseCreateProfile(body: unknown): CreateProfileRequest {
   return parse(createProfileBodySchema, body) as CreateProfileRequest;
+}
+
+export function parseInverseScalar(body: unknown): InverseScalarRequest {
+  return parse(inverseScalarBodySchema, body) as InverseScalarRequest;
+}
+
+export function parseInverseLoading(body: unknown): InverseLoadingRequest {
+  return parse(inverseLoadingBodySchema, body) as InverseLoadingRequest;
 }
 
 /** Exactly one of inline camber / stored profile reference must be present. */

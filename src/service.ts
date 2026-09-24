@@ -10,6 +10,13 @@ import { buildCamberModel } from './camber';
 import { analyze, AnalysisResult, checkAlpha, zeroLiftAngle } from './analyze';
 import { ProfileStore } from './profileStore';
 import { resolveCamberRef } from './validation';
+import {
+  designForScalars,
+  designForLoading,
+  InverseResult,
+  ScalarTarget,
+  LoadingTarget,
+} from './inverse';
 import { ServiceError } from './errors';
 
 export interface SweepPoint {
@@ -85,3 +92,31 @@ export function sweep(
 
 /** Re-export for convenience of callers/tests. */
 export { ServiceError };
+
+/**
+ * Run an inverse design (scalar or loading target) and, when `saveAs` is
+ * given, register the resulting camber as a named profile so it can be
+ * reused by /analyze, /sweep and /analyze/batch. The geometry is always one
+ * of the two existing camber representations (discrete points), so it slots
+ * straight into the existing registry without a parallel type.
+ */
+export async function inverseDesign(
+  store: ProfileStore,
+  request: (ScalarTarget | LoadingTarget) & { saveAs?: string; name?: string; description?: string },
+): Promise<{ result: InverseResult; saved?: import('./profileStore').StoredProfile }> {
+  const result =
+    'loading' in request
+      ? designForLoading(request as LoadingTarget)
+      : designForScalars(request as ScalarTarget);
+
+  let saved;
+  if (request.saveAs !== undefined) {
+    saved = await store.create({
+      id: request.saveAs,
+      ...(request.name !== undefined ? { name: request.name } : {}),
+      ...(request.description !== undefined ? { description: request.description } : {}),
+      camber: result.camber,
+    });
+  }
+  return { result, ...(saved !== undefined ? { saved } : {}) };
+}

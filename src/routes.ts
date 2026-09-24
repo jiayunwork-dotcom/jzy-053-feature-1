@@ -4,6 +4,8 @@
  *   POST /analyze                 single geometry + single alpha
  *   POST /analyze/batch           many independent geometry/alpha jobs
  *   POST /sweep                   one geometry over an alpha interval
+ *   POST /design/lift             inverse design from Cl (+ optional Cm)
+ *   POST /design/loading          inverse design from a chordwise loading
  *   GET  /profiles                list named profiles
  *   POST /profiles                register a named profile
  *   GET  /profiles/:id            fetch one
@@ -20,9 +22,11 @@ import {
   parseAnalyze,
   parseBatch,
   parseCreateProfile,
+  parseInverseScalar,
+  parseInverseLoading,
   parseSweep,
 } from './validation';
-import { evaluate, sweep } from './service';
+import { evaluate, inverseDesign, sweep } from './service';
 import { ServiceError, StructuredError, toErrorBody } from './errors';
 
 export function createRouter(store: ProfileStore): Router {
@@ -53,8 +57,48 @@ export function createRouter(store: ProfileStore): Router {
     }
   });
 
-  /* --------------------------- analyze batch -------------------------- */
+  /* --------------------------- inverse design ------------------------- */
 
+  router.post('/design/lift', (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const body = parseInverseScalar(req.body);
+      inverseDesign(store, {
+        alpha: body.alpha,
+        cl: body.cl,
+        ...(body.cmQuarter !== undefined ? { cmQuarter: body.cmQuarter } : {}),
+        ...(body.symmetric !== undefined ? { symmetric: body.symmetric } : {}),
+        ...(body.tolerance !== undefined ? { tolerance: body.tolerance } : {}),
+        ...(body.saveAs !== undefined ? { saveAs: body.saveAs } : {}),
+        ...(body.name !== undefined ? { name: body.name } : {}),
+        ...(body.description !== undefined ? { description: body.description } : {}),
+      })
+        .then(({ result, saved }) => res.json(serializeInverse(result, saved)))
+        .catch(next);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post('/design/loading', (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const body = parseInverseLoading(req.body);
+      inverseDesign(store, {
+        alpha: body.alpha,
+        loading: body.loading,
+        ...(body.order !== undefined ? { order: body.order } : {}),
+        ...(body.tolerance !== undefined ? { tolerance: body.tolerance } : {}),
+        ...(body.saveAs !== undefined ? { saveAs: body.saveAs } : {}),
+        ...(body.name !== undefined ? { name: body.name } : {}),
+        ...(body.description !== undefined ? { description: body.description } : {}),
+      })
+        .then(({ result, saved }) => res.json(serializeInverse(result, saved)))
+        .catch(next);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  /* --------------------------- analyze batch -------------------------- */
   router.post('/analyze/batch', (req: Request, res: Response, next: NextFunction) => {
     let items: ReturnType<typeof parseBatch>['items'];
     try {
@@ -166,4 +210,22 @@ function toStructured(err: unknown): StructuredError {
   }
   const message = err instanceof Error ? err.message : 'Unknown error';
   return { code: 'INTERNAL', message };
+}
+
+import type { InverseResult } from './inverse';
+import type { StoredProfile } from './profileStore';
+
+function serializeInverse(
+  result: InverseResult,
+  saved?: StoredProfile,
+): Record<string, unknown> {
+  return {
+    camber: result.camber,
+    alpha: result.alpha,
+    targets: result.targets,
+    criterion: result.criterion,
+    verification: result.verification,
+    diagnostics: result.diagnostics,
+    ...(saved !== undefined ? { savedProfile: { id: saved.id } } : {}),
+  };
 }
