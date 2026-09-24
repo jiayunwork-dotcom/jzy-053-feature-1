@@ -4,6 +4,7 @@
  *   POST /analyze                 single geometry + single alpha
  *   POST /analyze/batch           many independent geometry/alpha jobs
  *   POST /sweep                   one geometry over an alpha interval
+ *   POST /inverse                 invert aerodynamic targets into a camber
  *   GET  /profiles                list named profiles
  *   POST /profiles                register a named profile
  *   GET  /profiles/:id            fetch one
@@ -20,9 +21,10 @@ import {
   parseAnalyze,
   parseBatch,
   parseCreateProfile,
+  parseInverse,
   parseSweep,
 } from './validation';
-import { evaluate, sweep } from './service';
+import { evaluate, inverse, sweep } from './service';
 import { ServiceError, StructuredError, toErrorBody } from './errors';
 
 export function createRouter(store: ProfileStore): Router {
@@ -121,6 +123,34 @@ export function createRouter(store: ProfileStore): Router {
     } catch (err) {
       next(err);
     }
+  });
+
+  /* ------------------------------ inverse ----------------------------- */
+
+  router.post('/inverse', (req: Request, res: Response, next: NextFunction) => {
+    let body;
+    try {
+      body = parseInverse(req.body);
+    } catch (err) {
+      next(err);
+      return;
+    }
+    inverse(store, body)
+      .then(({ result, registered }) => {
+        res.status(registered ? 201 : 200).json({
+          target: result.target,
+          camber: result.camber,
+          selectionCriterion: result.selectionCriterion,
+          prediction: result.prediction,
+          verification: result.verification,
+          diagnostics: result.diagnostics,
+          outOfRange: result.outOfRange,
+          ...(registered && body.register
+            ? { profile: { id: body.register.id } }
+            : {}),
+        });
+      })
+      .catch(next);
   });
 
   /* ----------------------------- profiles ----------------------------- */

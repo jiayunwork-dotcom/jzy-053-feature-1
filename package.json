@@ -10,7 +10,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
-    "test": "node --import tsx --test test/theory.test.ts test/validation.test.ts test/store.test.ts test/http.test.ts"
+    "test": "node --import tsx --test test/theory.test.ts test/validation.test.ts test/store.test.ts test/inverse.test.ts test/inverse.http.test.ts test/http.test.ts"
   },
   "dependencies": {
     "express": "^4.19.2",

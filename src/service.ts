@@ -8,6 +8,7 @@
 import { CamberDef } from './types';
 import { buildCamberModel } from './camber';
 import { analyze, AnalysisResult, checkAlpha, zeroLiftAngle } from './analyze';
+import { inverseDesign, InverseRequest, InverseResult } from './inverse';
 import { ProfileStore } from './profileStore';
 import { resolveCamberRef } from './validation';
 import { ServiceError } from './errors';
@@ -81,6 +82,33 @@ export function sweep(
     }
   }
   return { alphaL0, points };
+}
+
+/**
+ * Inverse design: invert aerodynamic targets into a camber line, run the
+ * unmodified forward evaluator on the result (inside inverseDesign) and,
+ * when asked, register the verified line as a reusable named profile.
+ *
+ * The solver itself is synchronous pure compute with no shared mutable
+ * state; concurrent inverse calls therefore cannot mix solutions. Only
+ * the optional profile registration touches the (already serialised)
+ * store.
+ */
+export async function inverse(
+  store: ProfileStore,
+  req: InverseRequest,
+): Promise<{ result: InverseResult; registered: boolean }> {
+  const result = inverseDesign(req);
+  if (req.register !== undefined) {
+    await store.create({
+      id: req.register.id,
+      ...(req.register.name !== undefined ? { name: req.register.name } : {}),
+      ...(req.register.description !== undefined ? { description: req.register.description } : {}),
+      camber: result.camber,
+    });
+    return { result, registered: true };
+  }
+  return { result, registered: false };
 }
 
 /** Re-export for convenience of callers/tests. */

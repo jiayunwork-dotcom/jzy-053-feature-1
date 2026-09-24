@@ -78,7 +78,7 @@ const batchBodySchema = z
   })
   .strict();
 
-const profileIdSchema = z
+export const profileIdSchema = z
   .string()
   .min(1)
   .max(64)
@@ -130,6 +130,62 @@ export interface CreateProfileRequest {
   camber: CamberDef;
 }
 
+/* ----------------------------- inverse design ----------------------------- */
+
+/** A loading sample may quote its position by chord x or angle theta. */
+const loadingByXSchema = z
+  .object({ x: finiteNumber, deltaCp: finiteNumber })
+  .strict();
+const loadingByThetaSchema = z
+  .object({ theta: finiteNumber, deltaCp: finiteNumber })
+  .strict();
+const loadingSampleSchema = z.union([loadingByXSchema, loadingByThetaSchema]);
+
+const cmIntervalSchema = z
+  .object({ min: finiteNumber, max: finiteNumber })
+  .strict();
+
+const inverseBoundsSchema = z
+  .object({
+    maxCamber: finiteNumber.nullable().optional(),
+    maxSlope: finiteNumber.nullable().optional(),
+  })
+  .strict();
+
+const inverseRegisterSchema = z
+  .object({
+    id: profileIdSchema,
+    name: z.string().max(200).optional(),
+    description: z.string().max(2000).optional(),
+  })
+  .strict();
+
+const inverseBodySchema = z
+  .object({
+    alpha: finiteNumber,
+    cl: finiteNumber.optional(),
+    cmQuarter: z.union([finiteNumber, cmIntervalSchema]).optional(),
+    loading: z.array(loadingSampleSchema).min(1).max(1024).optional(),
+    allowOutOfRange: z.boolean().optional().default(false),
+    output: z.enum(['auto', 'polynomial', 'points']).optional(),
+    bounds: inverseBoundsSchema.optional(),
+    samples: z.number().int().min(1024).max(2048).optional(),
+    register: inverseRegisterSchema.optional(),
+  })
+  .strict();
+
+export interface InverseTargetRequest {
+  alpha: number;
+  cl?: number;
+  cmQuarter?: number | { min: number; max: number };
+  loading?: Array<{ x: number; deltaCp: number } | { theta: number; deltaCp: number }>;
+  allowOutOfRange: boolean;
+  output?: 'auto' | 'polynomial' | 'points';
+  bounds?: { maxCamber?: number | null; maxSlope?: number | null };
+  samples?: number;
+  register?: { id: string; name?: string; description?: string };
+}
+
 function formatZod(err: z.ZodError): ServiceError {
   const fields = err.issues.map((issue) => ({
     path: issue.path.map(String).join('.') || '(root)',
@@ -172,6 +228,38 @@ export function parseBatch(body: unknown): { items: BatchItemRequest[] } {
 
 export function parseCreateProfile(body: unknown): CreateProfileRequest {
   return parse(createProfileBodySchema, body) as CreateProfileRequest;
+}
+
+export function parseInverse(body: unknown): InverseTargetRequest {
+  const req = parse(inverseBodySchema, body) as InverseTargetRequest;
+  if (req.cl === undefined && req.loading === undefined) {
+    throw new ServiceError(
+      'INVALID_TARGET',
+      "An inverse request must specify a target: 'cl' (optionally with 'cmQuarter') or 'loading'",
+    );
+  }
+  if (typeof req.cmQuarter === 'object' && !(req.cmQuarter.max >= req.cmQuarter.min)) {
+    throw new ServiceError(
+      'INVALID_TARGET',
+      'cmQuarter interval must satisfy max >= min',
+      { min: req.cmQuarter.min, max: req.cmQuarter.max },
+    );
+  }
+  if (req.bounds) {
+    for (const [name, value] of [
+      ['maxCamber', req.bounds.maxCamber],
+      ['maxSlope', req.bounds.maxSlope],
+    ] as const) {
+      if (typeof value === 'number' && !(value >= 0)) {
+        throw new ServiceError(
+          'INVALID_TARGET',
+          `bounds.${name} must be non-negative when supplied (use null to disable the guard)`,
+          { bounds: req.bounds },
+        );
+      }
+    }
+  }
+  return req;
 }
 
 /** Exactly one of inline camber / stored profile reference must be present. */
